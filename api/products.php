@@ -13,56 +13,97 @@
  * Response shape
  *   { "count": 12, "products": [ Product, ... ] }
  *
+ * Built on Symfony's HttpFoundation component rather than raw superglobals and
+ * header() calls. See README.md for why that component alone, and not the full
+ * framework.
+ *
  * The source JSON uses `false` to mean "this product has no value for this
  * field". That is normalised to `null` here so the client has a single,
- * unambiguous absence value to check rather than juggling a boolean that
- * masquerades as a number.
+ * unambiguous absence value, rather than a boolean that coerces to 0 in
+ * arithmetic and sits alongside genuinely absent values.
  *
- * Prices are held as integer pence throughout. Formatting to "£7.99" happens
- * on the client so the API stays presentation-agnostic.
+ * Prices are held as integer pence throughout, which keeps floating point
+ * rounding out of transit. Formatting to "£7.99" happens on the client so the
+ * API stays presentation-agnostic.
  */
 
 declare(strict_types=1);
 
-const DATA_FILE   = __DIR__ . '/data/product.json';
-const IMAGE_PATH  = '/img/';
-const MAX_DELAY_MS = 10000;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store');
+require_once __DIR__ . '/vendor/autoload.php';
 
-// The React dev server runs on a different origin to `php -S`, so the API has
-// to opt in to cross-origin reads. Vite is also configured to proxy /api,
-// which avoids CORS entirely; these headers keep the endpoint usable when it
-// is called directly (curl, Postman, a different host).
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+const DATA_FILE    = __DIR__ . '/data/product.json';
+const IMAGE_PATH   = '/img/';
+const MAX_DELAY_MS = 10_000;
 
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
-    http_response_code(204);
-    exit;
+$request  = Request::createFromGlobals();
+$response = handle($request);
+
+// HttpFoundation is responsible for emitting status line, headers and body,
+// which is the point of using it: no manual header() bookkeeping, and the
+// response is a value that can be built up and returned rather than side
+// effects scattered through the script.
+$response->prepare($request);
+$response->send();
+
+/**
+ * Front controller: routes one request to one response.
+ *
+ * Returning a Response rather than echoing keeps every exit path uniform —
+ * success and failure are the same kind of thing.
+ */
+function handle(Request $request): Response
+{
+    // The React dev server runs on a different origin to `php -S`. Vite is
+    // configured to proxy /api, which avoids CORS in development entirely;
+    // these headers keep the endpoint usable when called directly, from curl,
+    // Postman or another host.
+    $cors = [
+        'Access-Control-Allow-Origin'  => '*',
+        'Access-Control-Allow-Methods' => 'GET, OPTIONS',
+        'Access-Control-Allow-Headers' => 'Content-Type',
+    ];
+
+    if ($request->isMethod(Request::METHOD_OPTIONS)) {
+        return new Response('', Response::HTTP_NO_CONTENT, $cors);
+    }
+
+    if (!$request->isMethod(Request::METHOD_GET)) {
+        return new JsonResponse(
+            ['error' => 'Method not allowed. Use GET.'],
+            Response::HTTP_METHOD_NOT_ALLOWED,
+            $cors + ['Allow' => 'GET, OPTIONS'],
+        );
+    }
+
+    applyRequestedDelay($request);
+
+    try {
+        $products = loadProducts(DATA_FILE);
+    } catch (RuntimeException $e) {
+        // The message is deliberately generic. Nothing about the filesystem or
+        // a stack trace should reach the client.
+        return new JsonResponse(
+            ['error' => $e->getMessage()],
+            Response::HTTP_INTERNAL_SERVER_ERROR,
+            $cors,
+        );
+    }
+
+    return new JsonResponse(
+        [
+            'count'    => count($products),
+            'products' => $products,
+        ],
+        Response::HTTP_OK,
+        // The catalogue is read fresh each time so the loading state is always
+        // demonstrable; a real deployment would cache this aggressively.
+        $cors + ['Cache-Control' => 'no-store'],
+    );
 }
-
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
-    respondWithError(405, 'Method not allowed. Use GET.');
-}
-
-applyRequestedDelay();
-
-try {
-    $products = loadProducts(DATA_FILE);
-} catch (RuntimeException $e) {
-    respondWithError(500, $e->getMessage());
-}
-
-echo json_encode(
-    [
-        'count'    => count($products),
-        'products' => $products,
-    ],
-    JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
-);
 
 /**
  * Reads the catalogue from disk and maps it into the API's response shape.
@@ -83,7 +124,7 @@ function loadProducts(string $path): array
 
     try {
         $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-    } catch (JsonException $e) {
+    } catch (JsonException) {
         throw new RuntimeException('Product data is malformed.');
     }
 
@@ -92,8 +133,8 @@ function loadProducts(string $path): array
     }
 
     return array_values(array_map(
-        'normaliseProduct',
-        array_filter($decoded['product_arr'], 'is_array')
+        normaliseProduct(...),
+        array_filter($decoded['product_arr'], is_array(...)),
     ));
 }
 
@@ -110,8 +151,8 @@ function normaliseProduct(array $raw): array
     $reviews  = toPositiveInt($raw['reviews'] ?? null);
     $image    = toPositiveInt($raw['img'] ?? null);
 
-    // A "was price" that is not actually higher than the current price is not a
-    // saving, so it is discarded rather than rendered as a £0.00 or negative
+    // A "was price" that is not actually higher than the current price is not
+    // a saving, so it is discarded rather than rendered as a £0.00 or negative
     // discount.
     if ($wasPrice !== null && $wasPrice <= $price) {
         $wasPrice = null;
@@ -145,28 +186,16 @@ function toPositiveInt(mixed $value): ?int
 
 /**
  * Honours ?delay=<ms> so the client's loading state can be demonstrated.
+ *
+ * Read through HttpFoundation's ParameterBag, which validates and casts the
+ * input rather than trusting $_GET.
  */
-function applyRequestedDelay(): void
+function applyRequestedDelay(Request $request): void
 {
-    $requested = $_GET['delay'] ?? null;
-
-    if ($requested === null || !is_numeric($requested)) {
-        return;
-    }
-
-    $ms = min(max((int) $requested, 0), MAX_DELAY_MS);
+    $ms = $request->query->getInt('delay');
+    $ms = min(max($ms, 0), MAX_DELAY_MS);
 
     if ($ms > 0) {
         usleep($ms * 1000);
     }
-}
-
-/**
- * Emits a JSON error body and stops. Never leaks a stack trace to the client.
- */
-function respondWithError(int $status, string $message): never
-{
-    http_response_code($status);
-    echo json_encode(['error' => $message], JSON_PRETTY_PRINT);
-    exit;
 }

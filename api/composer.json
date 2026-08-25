@@ -1,0 +1,9 @@
+{
+    "name": "airisdom/product-api",
+    "description": "Headless product API for the product list assessment",
+    "type": "project",
+    "require": {
+        "php": ">=8.2",
+        "symfony/http-foundation": "^8.1"
+    }
+}

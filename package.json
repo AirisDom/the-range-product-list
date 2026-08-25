@@ -1,0 +1,24 @@
+{
+  "name": "the-range-product-list",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "api": "php -S localhost:8000 -t api",
+    "start": "npm run api & npm run dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test src/lib/sorting.test.js"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.11",
+    "@vitejs/plugin-react": "^4.6.0",
+    "tailwindcss": "^4.1.11",
+    "vite": "^7.0.0"
+  }
+}

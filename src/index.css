@@ -1,0 +1,19 @@
+@import 'tailwindcss';
+
+/* Colours sampled directly from the supplied design (png/design.png) so the
+   build matches it rather than approximating it. */
+@theme {
+  --color-brand-orange: #ff6600;
+  --color-brand-orange-dark: #e65c00;
+  --color-brand-slate: #364756;
+  --color-brand-green: #006600;
+  --color-brand-red: #ff0000;
+  --color-brand-border: #cccccc;
+  --color-brand-skeleton: #d1d1d1;
+  --color-brand-ink: #222222;
+}
+
+body {
+  background-color: #ffffff;
+  -webkit-font-smoothing: antialiased;
+}
